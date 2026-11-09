@@ -1,21 +1,23 @@
 # Video Test-Time Adaptation Under Correlated Distribution Shifts (RG-ViTTA)
 
 **Course Project — Applied Foundations of Machine Learning (AFML)**  
-**Team Strawhat Pirates:** Samarth P Kulkarni, B Thrivikram, Mohammad Faizan  
+**Team Strawhat Pirates:** Mohammed Faizan, Samarth P Kulkarni, B Thrivikram,  
 **Pretrained Backbone:** VideoMAE (`videomae-base-finetuned-ucf101`)  
-**Target Benchmark:** UCF-101 Action Recognition under Correlated Corruptions  
+**Target Benchmark:** UCF-101 Action Recognition under Correlated Corruptions
 
 ---
 
 ## 📌 Abstract & Motivation
 
-Video Test-Time Adaptation (TTA) aims to adapt pretrained video recognition models to unseen test-time distribution shifts (e.g., weather degradation, motion blur, sensor noise, compression) without access to source training data or ground-truth supervision. 
+Video Test-Time Adaptation (TTA) aims to adapt pretrained video recognition models to unseen test-time distribution shifts (e.g., weather degradation, motion blur, sensor noise, compression) without access to source training data or ground-truth supervision.
 
 Existing video TTA frameworks (such as ViTTA and TempT) rely heavily on **temporal prediction consistency** as a self-supervisory objective under the core assumption:
 $$\text{Temporal Agreement Across Frames} \implies \text{Prediction Reliability}$$
 
 ### The "Echo Chamber Trap"
+
 In real-world video distribution shifts, corruptions are **temporally correlated**: consecutive frames experience nearly identical noise, blur, or compression artifacts. As the temporal correlation $\rho \to 1$:
+
 1. The model makes a consistent, confident, yet incorrect prediction across consecutive frames.
 2. Temporal consistency metrics register high agreement, misinterpreting systematic corruption for semantic certainty.
 3. Blind consistency-driven adaptation forces the network to optimize towards its own erroneous predictions, poisoning the model's weights and causing **Harmful Adaptation (HAR)**.
@@ -31,7 +33,7 @@ flowchart TD
     V["Incoming Test Video (V)"] --> AR1["Stationary AR(1) Correlated Shift Engine (ρ ∈ [0, 1])"]
     AR1 --> MAE["Frozen VideoMAE Backbone"]
     MAE --> TS["Dual Consistency Extraction"]
-    
+
     subgraph S1["Stage 1: Multi-Signal Lie Detection"]
         TS --> Ctemp["Temporal Consistency (C_temp)"]
         TS --> Cspat["Spatial Consistency (C_spat)"]
@@ -39,15 +41,15 @@ flowchart TD
         TS --> Cos["Spatiotemporal Agreement (cos_ts)"]
         TS --> DeltaC["Consistency Divergence (ΔC = C_temp - C_spat)"]
     end
-    
+
     S1 --> REF["Calibrated Reliability Estimator Head (The Referee: r(V))"]
-    
+
     subgraph S2["Stage 2: Gated Test-Time Adaptation (RG-ViTTA)"]
         REF --> DEC{"r(V) ≥ τ_gate?"}
         DEC -- "Yes (Trustworthy)" --> ADAPT["Adapt LayerNorm Weights via Entropy Minimization"]
         DEC -- "No (Echo Trap)" --> ABSTAIN["Abstain from Adaptation (Preserve Source Weights)"]
     end
-    
+
     ADAPT --> OUT["Final Action Prediction"]
     ABSTAIN --> OUT
 ```
@@ -57,30 +59,35 @@ flowchart TD
 ## 🔬 Core Components
 
 ### 1. Variance-Preserving AR(1) Corruption Scheduler
+
 To simulate continuous, temporally correlated environmental shifts while keeping marginal corruption severity constant across correlation levels $\rho \in [0.0, 1.0]$, corruption trajectories are generated via a stationary autoregressive process:
 $$z_1 \sim \mathcal{N}(0, 1)$$
 $$z_t = \rho z_{t-1} + \sqrt{1 - \rho^2} \eta_t, \quad \eta_t \sim \mathcal{N}(0, 1)$$
 
-* **$\rho = 0.0$:** Independent per-frame corruption (stochastic flicker).
-* **$0.0 < \rho < 1.0$:** Smoothly drifting continuous corruption.
-* **$\rho = 1.0$:** Frozen persistent corruption across the entire video sequence.
-* **Severity Invariance:** $\text{Var}(z_t) = 1.0$ for all $t$ and all $\rho$, ensuring distribution shifts are driven solely by temporal persistence rather than marginal intensity changes.
+- **$\rho = 0.0$:** Independent per-frame corruption (stochastic flicker).
+- **$0.0 < \rho < 1.0$:** Smoothly drifting continuous corruption.
+- **$\rho = 1.0$:** Frozen persistent corruption across the entire video sequence.
+- **Severity Invariance:** $\text{Var}(z_t) = 1.0$ for all $t$ and all $\rho$, ensuring distribution shifts are driven solely by temporal persistence rather than marginal intensity changes.
 
 ### 2. Dual Consistency "Lie Detector"
+
 For each test video $V$:
-* **Temporal Consistency ($C_{\text{temp}}$):** Evaluates Jensen-Shannon Divergence (JSD) and hard voting across $M$ non-overlapping temporal clips sampled across the timeline.
-* **Spatial Augmentation Consistency ($C_{\text{spat}}$):** Evaluates prediction survival when applying randomized affine crops, horizontal flips, and spatial perturbations to anchor clips.
-* **Divergence Metric ($\Delta C$):**
+
+- **Temporal Consistency ($C_{\text{temp}}$):** Evaluates Jensen-Shannon Divergence (JSD) and hard voting across $M$ non-overlapping temporal clips sampled across the timeline.
+- **Spatial Augmentation Consistency ($C_{\text{spat}}$):** Evaluates prediction survival when applying randomized affine crops, horizontal flips, and spatial perturbations to anchor clips.
+- **Divergence Metric ($\Delta C$):**
   $$\Delta C = C_{\text{temp}} - C_{\text{spat}}$$
-  *Theoretical Intuition:* High temporal agreement ($C_{\text{temp}} \approx 1$) coupled with low spatial agreement ($C_{\text{spat}} \ll 1$) produces a large positive $\Delta C$, serving as the direct mathematical signature of an echo chamber trap.
+  _Theoretical Intuition:_ High temporal agreement ($C_{\text{temp}} \approx 1$) coupled with low spatial agreement ($C_{\text{spat}} \ll 1$) produces a large positive $\Delta C$, serving as the direct mathematical signature of an echo chamber trap.
 
 ### 3. The Calibrated Multi-Signal Referee
+
 The referee fuses spatiotemporal signals into a unified feature representation:
 $$\mathbf{u}(V) = \big[\text{conf},\, \text{neg\_entropy},\, C_{\text{temp\_soft}},\, C_{\text{spat\_soft}},\, C_{\text{temp\_hard}},\, C_{\text{spat\_hard}},\, \text{cos\_ts},\, \Delta C\big]^\top$$
 
 The Referee Head $g_\phi(\mathbf{u}(V))$ maps $\mathbf{u}(V)$ to a calibrated probability $r(V) \in [0, 1]$ estimating the likelihood that the model's test prediction is correct. Training is conducted on a strictly disjoint development split by video identity to guarantee zero data leakage.
 
 ### 4. Reliability-Guided Adaptation (RG-ViTTA)
+
 Standard video TTA updates model parameters on every incoming sequence. RG-ViTTA introduces a selective gating function:
 $$\theta_{t+1} = \begin{cases} \theta_t - \eta \nabla_\theta \mathcal{L}_{\text{TTA}}(V_t; \theta_t), & \text{if } r(V_t) \ge \tau_{\text{gate}} \\ \theta_t, & \text{if } r(V_t) < \tau_{\text{gate}} \quad (\text{Abstain}) \end{cases}$$
 
@@ -126,11 +133,13 @@ AFML/
 ## 🛠️ Installation & Environment Setup
 
 ### Prerequisites
-* Python 3.10+
-* CUDA-capable GPU (tested on NVIDIA Tesla T4 / A100)
-* PyTorch 2.0+ with CUDA support
+
+- Python 3.10+
+- CUDA-capable GPU (tested on NVIDIA Tesla T4 / A100)
+- PyTorch 2.0+ with CUDA support
 
 ### Setup
+
 ```bash
 git clone https://github.com/Strawhat-Pirates/Video-TTA-Correlated-Shifts.git
 cd Video-TTA-Correlated-Shifts
@@ -139,6 +148,7 @@ pip install -r requirements.txt
 ```
 
 ### Core Dependencies
+
 ```text
 torch>=2.0.0
 torchvision>=0.15.0
@@ -156,31 +166,41 @@ matplotlib>=3.7.0
 ## 🚦 Execution Pipeline
 
 ### Step 1: Pretrained Backbone Loading & Bias Remapping
+
 Loads the fine-tuned Kinetics-400 $\to$ UCF-101 VideoMAE checkpoint and remaps HuggingFace attention bias attributes:
+
 ```bash
 python -m src.models.backbone --model_name nateraw/videomae-base-finetuned-ucf101
 ```
 
 ### Step 2: Correlated Corruption Stream Generation (Phase 2)
+
 Applies the AR(1) temporal corruption engine across corruptions (Gaussian Noise, Defocus Blur, JPEG Compression, Motion Blur, Brightness Shift) across $\rho \in \{0.0, 0.5, 0.85, 1.0\}$:
+
 ```bash
 python -m src.corruptions.generate_grid --videos_path /path/to/ucf101 --severities 1 3 5 --rhos 0.0 0.5 0.85 1.0
 ```
 
 ### Step 3: Dual Consistency Signal Extraction (Phase 3)
+
 Samples $M = 4$ temporal clips and $K = 4$ spatial augmentations per anchor to compute $C_{\text{temp}}$, $C_{\text{spat}}$, $\Delta C$, entropy, and agreement:
+
 ```bash
 python -m src.reliability.consistency_signals --input_dir /path/to/corrupted_videos --out_csv phase3_signals.csv
 ```
 
 ### Step 4: Train & Calibrate the Referee Head (Phase 4)
+
 Performs strict video-level cross-validation to train the calibrated multi-signal referee:
+
 ```bash
 python -m src.reliability.referee --signals_csv phase3_signals.csv --out_model referee.pkl
 ```
 
 ### Step 5: Run Reliability-Guided Adaptation (Phase 5)
+
 Executes episodic or streaming test-time adaptation comparing Source-Only, Blind ViTTA, Confidence-Gated ViTTA, and RG-ViTTA:
+
 ```bash
 python -m src.adaptation.rg_vitta --data_csv phase4_estimator_scores.csv --lr 1e-4 --coverage 0.40
 ```
@@ -203,11 +223,12 @@ The framework evaluates methods across five complementary axes:
 
 ## 👥 Contributors (Team Strawhat Pirates)
 
-* **Samarth P Kulkarni** — Dataset curation, UCF-101 group leakage audit, AR(1) temporal corruption engine.
-* **B Thrivikram** — Spatiotemporal consistency formulation ($C_{\text{temp}}, C_{\text{spat}}, \Delta C$), referee head architecture, calibration.
-* **Mohammad Faizan** — Test-time adaptation loop (LayerNorm optimization), baseline integrations, HAR evaluation.
+- **Samarth P Kulkarni** — Dataset curation, UCF-101 group leakage audit, AR(1) temporal corruption engine.
+- **B Thrivikram** — Spatiotemporal consistency formulation ($C_{\text{temp}}, C_{\text{spat}}, \Delta C$), referee head architecture, calibration.
+- **Mohammad Faizan** — Test-time adaptation loop (LayerNorm optimization), baseline integrations, HAR evaluation.
 
 ---
 
 ## 📄 License & Acknowledgements
+
 This project is conducted as part of the **Applied Foundations of Machine Learning (AFML)** curriculum. Pretrained model weights are provided by Hugging Face (`nateraw/videomae-base-finetuned-ucf101`) based on the official VideoMAE architecture. Video processing is powered by `decord` and `OpenCV`.
